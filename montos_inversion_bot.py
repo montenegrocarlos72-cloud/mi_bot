@@ -9,7 +9,9 @@ from typing import Dict, Optional, List
 
 import pandas as pd
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2 import service_account
+import os, json
+
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -52,6 +54,20 @@ logger = logging.getLogger(__name__)
 # Pending maps
 pending_rejects: Dict[int, int] = {}    # admin_id -> user_chat_id (esperando motivo)
 pending_checks: Dict[int, float] = {}   # user_chat_id -> timestamp
+
+# ---------------- CREDENCIALES GOOGLE SHEETS ----------------
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+# Lee el JSON de la variable de entorno en Railway
+service_account_info = json.loads(os.environ["GOOGLE_SHEETS_CREDENTIALS"])
+
+# Crea las credenciales
+creds = service_account.Credentials.from_service_account_info(
+    service_account_info, scopes=SCOPES
+)
+
+# Conecta gspread usando esas credenciales
+client = gspread.authorize(creds)
 
 # ---------------- Google Sheets auth (lee credencial desde var de entorno) ----------------
 if not SHEET_ID:
@@ -785,3 +801,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
