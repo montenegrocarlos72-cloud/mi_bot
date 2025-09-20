@@ -69,20 +69,6 @@ creds = service_account.Credentials.from_service_account_info(
 # Conecta gspread usando esas credenciales
 client = gspread.authorize(creds)
 
-# ---------------- Google Sheets auth (lee credencial desde var de entorno) ----------------
-if not SHEET_ID:
-    # No frenar import; solo advertencia. Script fallará si intenta operar Sheets sin SHEET_ID
-    logger.warning("SHEET_ID no está definido en variables de entorno. Configura SHEET_ID.")
-
-def get_gspread_client():
-    creds_json = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
-    if not creds_json:
-        raise ValueError("Falta la variable de entorno GOOGLE_SHEETS_CREDENTIALS")
-    creds_dict = json.loads(creds_json)
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
-    return client
 
 def read_user_df() -> pd.DataFrame:
     """
@@ -801,4 +787,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
