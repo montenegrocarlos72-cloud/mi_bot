@@ -798,37 +798,35 @@ def main():
             CEDULA: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_cedula)],
             CONFIRMAR_DATOS: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirmar_datos)],
             ESPERAR_COMPROBANTE: [MessageHandler(filters.PHOTO | filters.Document.ALL & ~filters.COMMAND, recibir_comprobante)],
-            MENU_OPCIONES: [MessageHandler(filters.TEXT & ~filters.COMMAND, menu_opciones)],
+                        MENU_OPCIONES: [MessageHandler(filters.TEXT & ~filters.COMMAND, menu_opciones)],
 
             # Admin broadcast
-            ADMIN_BROADCAST_GET_MEDIA: [MessageHandler(filters.ALL & ~filters.COMMAND, admin_broadcast_receive_media)],
+            ADMIN_BROADCAST_GET_MEDIA: [MessageHandler(
+                (filters.PHOTO | filters.Document.ALL | filters.TEXT) & ~filters.COMMAND,
+                admin_broadcast_receive_media
+            )],
             ADMIN_BROADCAST_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast_confirm)],
-
-            # Nueva inversión
-            NUEVA_INVERSION_MONTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_nueva_inversion_monto)],
-            NUEVA_INVERSION_COMPROBANTE: [MessageHandler(filters.PHOTO | filters.Document.ALL & ~filters.COMMAND, recibir_nueva_inversion_comprobante)],
         },
-        fallbacks=[CommandHandler("start", start)],
-        per_message=False
+        fallbacks=[CommandHandler("start", start)]
     )
 
     app.add_handler(conv_handler)
 
-    # CallbackQuery handler para aprobaciones/rechazos
+    # Handler para callbacks de admins
     app.add_handler(CallbackQueryHandler(validar_transaccion))
 
-    # Handler para admin que escriben motivo de rechazo
+    # Handler para motivo de rechazo
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_reason_handler))
 
-    # Command para admins: /broadcast
+    # Comando broadcast (solo admins)
     app.add_handler(CommandHandler("broadcast", admin_broadcast_command))
-
-    logger.info("✅ Bot iniciado. Run polling...")
 
     app.run_polling()
 
+
 if __name__ == "__main__":
     main()
+
 
 
 
