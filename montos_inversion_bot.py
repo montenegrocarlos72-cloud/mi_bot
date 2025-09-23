@@ -45,7 +45,7 @@ SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")  # ID de la hoja de Google Sheets
     NOMBRE, CEDULA, CONFIRMAR_DATOS, ESPERAR_COMPROBANTE, MENU_OPCIONES,
     ADMIN_BROADCAST_GET_MEDIA, ADMIN_BROADCAST_CONFIRM, ADMIN_REJECTION_REASON,
     NUEVA_INVERSION_MONTO, NUEVA_INVERSION_COMPROBANTE
-) = range(15)
+) = range(14)
 
 # Columnas que vamos a usar en la sheet (aseguramos que existan)
 STANDARD_COLUMNS = [
@@ -829,5 +829,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
