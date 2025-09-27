@@ -1,166 +1,260 @@
-import logging
-from datetime import datetime
+import os
+import json
 import random
-import string
-import gspread
+import datetime
 from telegram import (
-    Update, ReplyKeyboardMarkup, InlineKeyboardMarkup,
-    InlineKeyboardButton
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 )
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    filters, ConversationHandler, ContextTypes
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, ConversationHandler, filters
+)
+import gspread
+from google.oauth2.service_account import Credentials
+
+# ===========================
+#   GOOGLE SHEETS SETUP
+# ===========================
+creds_json = os.getenv("GOOGLE_CREDS")
+creds_dict = json.loads(creds_json)
+creds = Credentials.from_service_account_info(
+    creds_dict,
+    scopes=["https://www.googleapis.com/auth/spreadsheets"]
+)
+gc = gspread.authorize(creds)
+SHEET = gc.open_by_key(os.getenv("SHEET_ID")).sheet1
+
+# ===========================
+#   VARIABLES
+# ===========================
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS").split(",")]
+FILE_ID_MONTOS = os.getenv("FILE_ID_MONTOS")
+FILE_ID_NX = os.getenv("FILE_ID_NX")
+
+(
+    MONTO, CONFIRMAR_INVERSION, REFERIDO, CONFIRMAR_REGISTRO,
+    NOMBRE, CEDULA, ESPERAR_COMPROBANTE, ADMIN_BROADCAST
+) = range(8)
+
+MAIN_MENU = ReplyKeyboardMarkup(
+    [["Nueva inversión", "Mis referidos"],
+     ["Soporte", "Horarios"],
+     ["Salir"]],
+    resize_keyboard=True
 )
 
-# ---------------- CONFIG ----------------
-TOKEN = "TU_TOKEN_TELEGRAM"
-ADMIN_IDS = [123456789, 987654321]  # IDs de admins
-SPREADSHEET_ID = "TU_SHEET_ID"
-
-# Google Sheets
-gc = gspread.service_account(filename="credentials.json")
-sh = gc.open_by_key(SPREADSHEET_ID)
-worksheet = sh.sheet1
-
-# Estados de conversación
-NOMBRE, CEDULA, CODIGO, REFERIDO, ESPERAR_COMPROBANTE = range(5)
-
-# Logger
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-
-# ---------------- HELPERS ----------------
+# ===========================
+#   FUNCIONES AUXILIARES
+# ===========================
 def generar_codigo():
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    return str(random.randint(1000, 9999))
 
-def save_user_to_sheet(user_id, name, cedula, codigo, referido_por=None):
-    fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    data = [user_id, name, cedula, codigo, referido_por or "N/A", fecha]
-    worksheet.append_row(data)
+def calcular_pago(monto):
+    return int(monto * 1.9)
 
-def get_referidos(user_id):
-    records = worksheet.get_all_records()
-    referidos = [r for r in records if str(r.get("ReferidoPor")) == str(user_id)]
-    return referidos
+def fecha_pago():
+    return (datetime.date.today() + datetime.timedelta(days=10)).strftime("%d/%m/%Y")
 
-# ---------------- HANDLERS ----------------
+def registrar_usuario(user_id, nombre, cedula, referido, codigo):
+    SHEET.append_row([str(user_id), nombre, cedula, referido, codigo, str(datetime.date.today())])
+
+def registrar_inversion(user_id, monto, codigo):
+    SHEET.append_row([str(user_id), "INVERSION", monto, codigo, str(datetime.date.today()), fecha_pago()])
+
+def obtener_referidos(codigo):
+    data = SHEET.get_all_records()
+    return [row for row in data if row.get("Referido") == codigo]
+
+# ===========================
+#   HANDLERS
+# ===========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [["Nueva Inversión", "Mis Referidos"], ["Soporte"]]
-    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text("👋 Bienvenido al bot de inversiones.\nElige una opción:", reply_markup=markup)
+    keyboard = [[InlineKeyboardButton(str(x), callback_data=f"monto_{x}")]
+                for x in range(200000, 501000, 50000)]
+    await update.message.reply_photo(
+        FILE_ID_MONTOS,
+        caption="Bienvenido 🙌\nSelecciona el monto de inversión:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return MONTO
 
-async def nueva_inversion(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✍️ Ingresa tu nombre completo:")
-    return NOMBRE
+async def elegir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    monto = int(query.data.split("_")[1])
+    context.user_data["monto"] = monto
+    pago = calcular_pago(monto)
+    await query.edit_message_text(
+        f"Elegiste invertir {monto:,}.\n"
+        f"Recibirás {pago:,} en {fecha_pago()}.\n¿Confirmas?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Sí ✅", callback_data="confirmar_si")],
+            [InlineKeyboardButton("No ❌", callback_data="confirmar_no")]
+        ])
+    )
+    return CONFIRMAR_INVERSION
 
-async def recibir_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["nombre"] = update.message.text
-    await update.message.reply_text("🆔 Ingresa tu número de cédula:")
-    return CEDULA
+async def confirmar_inversion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "confirmar_no":
+        await query.edit_message_text("Gracias por visitarnos 🙏 Vuelve pronto.", reply_markup=MAIN_MENU)
+        return ConversationHandler.END
 
-async def recibir_cedula(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["cedula"] = update.message.text
-    codigo = generar_codigo()
-    context.user_data["codigo"] = codigo
-    await update.message.reply_text(f"🔑 Tu código de registro es: {codigo}\n\n¿Quién te refirió? (Escribe el ID o escribe 'ninguno')")
+    await query.edit_message_text(
+        "¿Vienes referido por alguien?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Sí", callback_data="ref_si")],
+            [InlineKeyboardButton("No", callback_data="ref_no")]
+        ])
+    )
     return REFERIDO
 
-async def recibir_referido(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    referido = update.message.text
-    user = update.message.from_user
+async def referido(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "ref_si":
+        await query.edit_message_text("Ingresa el código de referido:")
+        context.user_data["esperando_referido"] = True
+        return REFERIDO
+    else:
+        await query.edit_message_text("¿Deseas registrarte?",
+                                      reply_markup=InlineKeyboardMarkup([
+                                          [InlineKeyboardButton("Sí ✅", callback_data="reg_si")],
+                                          [InlineKeyboardButton("No ❌", callback_data="reg_no")]
+                                      ]))
+        return CONFIRMAR_REGISTRO
 
-    nombre = context.user_data["nombre"]
-    cedula = context.user_data["cedula"]
-    codigo = context.user_data["codigo"]
+async def procesar_referido(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("esperando_referido"):
+        codigo = update.message.text.strip()
+        context.user_data["referido"] = codigo
+        await update.message.reply_text("¿Deseas registrarte?",
+                                        reply_markup=InlineKeyboardMarkup([
+                                            [InlineKeyboardButton("Sí ✅", callback_data="reg_si")],
+                                            [InlineKeyboardButton("No ❌", callback_data="reg_no")]
+                                        ]))
+        return CONFIRMAR_REGISTRO
 
-    referido_val = referido if referido.lower() != "ninguno" else None
+async def confirmar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "reg_no":
+        await query.edit_message_text("Gracias por visitarnos 🙏 Vuelve pronto.", reply_markup=MAIN_MENU)
+        return ConversationHandler.END
 
-    save_user_to_sheet(user.id, nombre, cedula, codigo, referido_val)
+    await query.edit_message_text("Ingresa tu nombre completo:")
+    return NOMBRE
 
-    await update.message.reply_text("📤 Envía ahora tu comprobante de pago en formato de imagen.")
+async def guardar_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["nombre"] = update.message.text.strip()
+    await update.message.reply_text("Ingresa tu número de cédula:")
+    return CEDULA
+
+async def guardar_cedula(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["cedula"] = update.message.text.strip()
+    codigo = generar_codigo()
+    context.user_data["codigo"] = codigo
+    registrar_usuario(
+        update.effective_user.id,
+        context.user_data["nombre"],
+        context.user_data["cedula"],
+        context.user_data.get("referido", "N/A"),
+        codigo
+    )
+
+    await update.message.reply_photo(
+        FILE_ID_NX,
+        caption=f"✅ Registro exitoso.\nTu código es: {codigo}\n\n"
+                "Consigna y envía tu comprobante aquí.",
+        reply_markup=MAIN_MENU
+    )
     return ESPERAR_COMPROBANTE
 
 async def recibir_comprobante(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    photo = update.message.photo[-1].file_id
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+        monto = context.user_data.get("monto", 0)
+        codigo = context.user_data.get("codigo")
+        registrar_inversion(update.effective_user.id, monto, codigo)
 
-    await update.message.reply_text("✅ Hemos recibido tu comprobante. Será validado por un administrador.")
+        for admin_id in ADMIN_IDS:
+            await context.bot.send_photo(
+                chat_id=admin_id,
+                photo=file_id,
+                caption=f"Nuevo comprobante de {context.user_data['nombre']} (Cédula: {context.user_data['cedula']}).\n"
+                        f"Monto: {monto:,}\nCódigo: {codigo}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Aceptar ✅", callback_data=f"aceptar_{update.effective_user.id}")],
+                    [InlineKeyboardButton("Rechazar ❌", callback_data=f"rechazar_{update.effective_user.id}")],
+                    [InlineKeyboardButton("Enviar mensaje ✉️", callback_data=f"msg_{update.effective_user.id}")]
+                ])
+            )
 
-    for admin_id in ADMIN_IDS:
-        await context.bot.send_photo(
-            chat_id=admin_id,
-            photo=photo,
-            caption=f"📩 Nuevo comprobante de {user.first_name} (ID: {user.id})\n\n"
-                    f"/aceptar {user.id} | /rechazar {user.id} [motivo]"
-        )
+        await update.message.reply_text("📌 Tu comprobante fue enviado a validación.\n"
+                                        "Tendrá respuesta en 5-10 minutos.",
+                                        reply_markup=MAIN_MENU)
+        return ConversationHandler.END
+
+# ===========================
+#   ADMIN FUNCIONES
+# ===========================
+async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    action, user_id = query.data.split("_")
+    user_id = int(user_id)
+
+    if action == "aceptar":
+        await context.bot.send_message(chat_id=user_id, text="✅ Tu comprobante fue validado. Gracias por confiar.", reply_markup=MAIN_MENU)
+        await query.edit_message_caption(caption="Comprobante validado ✅")
+    elif action == "rechazar":
+        await context.bot.send_message(chat_id=user_id, text="❌ Tu comprobante fue rechazado. Vuelve a intentarlo.", reply_markup=MAIN_MENU)
+        await query.edit_message_caption(caption="Comprobante rechazado ❌")
+    elif action == "msg":
+        context.user_data["msg_target"] = user_id
+        await query.message.reply_text("✉️ Escribe el mensaje que deseas enviar al usuario:")
+        return ADMIN_BROADCAST
+
+async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = context.user_data.get("msg_target")
+    if target:
+        await context.bot.send_message(chat_id=target, text=f"📩 Mensaje del administrador:\n\n{update.message.text}")
+        await update.message.reply_text("✅ Mensaje enviado al usuario.")
     return ConversationHandler.END
 
-async def aceptar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id not in ADMIN_IDS:
-        return
-    try:
-        user_id = context.args[0]
-        await context.bot.send_message(chat_id=user_id, text="🎉 Tu comprobante fue aprobado. Bienvenido!")
-        await update.message.reply_text(f"✅ Has aprobado el comprobante de {user_id}")
-    except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
-
-async def rechazar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id not in ADMIN_IDS:
-        return
-    try:
-        user_id = context.args[0]
-        motivo = " ".join(context.args[1:]) if len(context.args) > 1 else "Sin motivo"
-        await context.bot.send_message(chat_id=user_id, text=f"❌ Tu comprobante fue rechazado.\nMotivo: {motivo}")
-        await update.message.reply_text(f"❌ Has rechazado el comprobante de {user_id}")
-    except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
-
-async def mis_referidos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    referidos = get_referidos(user_id)
-
-    if not referidos:
-        await update.message.reply_text("📌 No tienes referidos registrados.")
-        return
-
-    msg = "👥 Tus referidos:\n"
-    for r in referidos:
-        msg += f"- {r['Nombre']} (Cédula: {r['Cedula']})\n"
-    msg += f"\n💰 Pago estimado: {len(referidos) * 30000} COP"
-    await update.message.reply_text(msg)
-
-async def soporte(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📞 Para soporte comunícate con un administrador.")
-
-# ---------------- MAIN ----------------
+# ===========================
+#   MAIN
+# ===========================
 def main():
-    application = Application.builder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^Nueva Inversión$"), nueva_inversion)],
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
         states={
-            NOMBRE: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_nombre)],
-            CEDULA: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_cedula)],
-            REFERIDO: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_referido)],
+            MONTO: [CallbackQueryHandler(elegir_monto, pattern="^monto_")],
+            CONFIRMAR_INVERSION: [CallbackQueryHandler(confirmar_inversion, pattern="^confirmar_")],
+            REFERIDO: [
+                CallbackQueryHandler(referido, pattern="^ref_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, procesar_referido)
+            ],
+            CONFIRMAR_REGISTRO: [CallbackQueryHandler(confirmar_registro, pattern="^reg_")],
+            NOMBRE: [MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_nombre)],
+            CEDULA: [MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_cedula)],
             ESPERAR_COMPROBANTE: [MessageHandler(filters.PHOTO, recibir_comprobante)],
+            ADMIN_BROADCAST: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast)],
         },
-        fallbacks=[CommandHandler("start", start)],
+        fallbacks=[]
     )
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("aceptar", aceptar))
-    application.add_handler(CommandHandler("rechazar", rechazar))
-    application.add_handler(MessageHandler(filters.Regex("^Mis Referidos$"), mis_referidos))
-    application.add_handler(MessageHandler(filters.Regex("^Soporte$"), soporte))
-
-    application.run_polling()
+    app.add_handler(conv)
+    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(aceptar|rechazar|msg)_"))
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
+
 
 
 
